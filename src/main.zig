@@ -45,8 +45,13 @@ const SReg = packed struct {
     i: u1,
 };
 
+const SP = packed struct {
+    l: u8,
+    h: u8,
+};
+
 const Instruction = enum {
-    // ALU instructions
+    // ALU
     add,
     nop,
     cp,
@@ -56,7 +61,10 @@ const Instruction = enum {
     @"or",
     mov,
 
-    // Immediate instructions
+    // Call/Jump
+    call,
+
+    // Immediate
     ldi,
 };
 
@@ -64,7 +72,13 @@ fn KB(n: usize) usize {
     return n * 1024;
 }
 
+const SystemCallLocs = enum(u14) {
+    potato = 0x37ff,
+};
+
 const stack_end: u16 = 0x08ff;
+
+const with_curses = false;
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -73,7 +87,8 @@ pub fn main() !void {
     var ally = arena.allocator();
 
     // Curses init
-    _ = c.initscr();
+    if (with_curses)
+        _ = c.initscr();
 
     ////////////////////
 
@@ -122,8 +137,7 @@ pub fn main() !void {
     var io_regs: []u8 = dmem[0x20..0x60];
 
     // Stack pointer
-    // FIXME(caleb): Panic incorrect alignment??
-    // const sp: *u16 = @ptrCast(@alignCast(io_regs[0x3d..0x3f]));
+
     const sph: *u8 = &io_regs[0x3e];
     const spl: *u8 = &io_regs[0x3d];
     sph.* = stack_end >> 8;
@@ -202,6 +216,8 @@ pub fn main() !void {
         const op1: u4 = @truncate(pmem[pc] >> 12);
         const op2: u2 = @truncate(pmem[pc] >> 10);
 
+        const op4: u4 = @truncate(pmem[pc]);
+
         // var instruction: Instruction = undefined;
         var instruction: Instruction = switch (op1) {
             // ALU instructions
@@ -224,6 +240,11 @@ pub fn main() !void {
                 0x1 => .eor,
                 0x2 => .@"or",
                 0x3 => .mov,
+            },
+
+            0x9 => switch (op4) { // call, jmp, com, neg, asr, lsr,
+                0xe => .call,
+                else => unreachable,
             },
 
             // Immediate instructions
@@ -296,6 +317,24 @@ pub fn main() !void {
                 sreg.s = sreg.n ^ sreg.v;
             },
 
+            .call => {
+                const cd: u14 = @truncate(pmem[pc + 1]);
+                const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
+
+                // Push return address
+                dmem[sp - 1] = @truncate((pc + 2) >> 8); // sph
+                dmem[sp] = @truncate(pc + 2); // spl
+
+                // Update sp
+                sph.* = @truncate((sp - 2) >> 8);
+                spl.* = @truncate(sp - 2);
+
+                // Update pc
+                next_pc_value = cd;
+
+                unreachable;
+            },
+
             .ldi => {
                 // Constant data
                 const cdh: u8 = @intCast((pmem[pc] >> 4) & 0x00f0);
@@ -330,7 +369,7 @@ pub fn main() !void {
         // std.debug.print("zh: {x}\n", .{zh.*});
         // std.debug.print("zl: {x}\n", .{zl.*});
 
-        {
+        if (with_curses) {
             const restore_state = scratch_arena.state;
             defer scratch_arena.state = restore_state;
             var print_buf = try scratch_ally.alloc(u8, 256);
@@ -353,5 +392,6 @@ pub fn main() !void {
             _ = c.getch();
         }
     }
-    _ = c.endwin();
+    if (with_curses)
+        _ = c.endwin();
 }
