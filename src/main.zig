@@ -22,6 +22,10 @@
 const std = @import("std");
 const elf = std.elf;
 
+const c = @cImport({
+    @cInclude("ncurses.h");
+});
+
 const SReg = packed struct {
     /// Carry flag
     c: u1,
@@ -65,7 +69,11 @@ const stack_end: u16 = 0x08ff;
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var scratch_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+    var scratch_ally = scratch_arena.allocator();
     var ally = arena.allocator();
+
+    // Curses init
+    _ = c.initscr();
 
     ////////////////////
 
@@ -88,18 +96,21 @@ pub fn main() !void {
 
     // 16-bit address pointers
     const x: *u16 = @ptrCast(@alignCast(gp_regs[0x1a..0x1c]));
+    _ = x;
     const xl: *u8 = &gp_regs[0x1a];
     _ = xl;
     const xh: *u8 = &gp_regs[0x1b];
     _ = xh;
 
     const y: *u16 = @ptrCast(@alignCast(gp_regs[0x1c..0x1e]));
+    _ = y;
     const yl: *u8 = &gp_regs[0x1c];
     const yh: *u8 = &gp_regs[0x1d];
     _ = yh;
     _ = yl;
 
     const z: *u16 = @ptrCast(@alignCast(gp_regs[0x1e..0x20]));
+    _ = z;
     const zl: *u8 = &gp_regs[0x1e];
     _ = zl;
     const zh: *u8 = &gp_regs[0x1f];
@@ -304,31 +315,43 @@ pub fn main() !void {
         }
 
         pc = next_pc_value; // Update program counter
+
+        // Print registers
+
+        // std.debug.print("x: {x}\n", .{x.*});
+        // std.debug.print("xh: {x}\n", .{xh.*});
+        // std.debug.print("xl: {x}\n", .{xl.*});
+
+        // std.debug.print("y: {x}\n", .{y.*});
+        // std.debug.print("yh: {x}\n", .{yh.*});
+        // std.debug.print("yl: {x}\n", .{yl.*});
+
+        // std.debug.print("z: {x}\n", .{z.*});
+        // std.debug.print("zh: {x}\n", .{zh.*});
+        // std.debug.print("zl: {x}\n", .{zl.*});
+
+        {
+            const restore_state = scratch_arena.state;
+            defer scratch_arena.state = restore_state;
+            var print_buf = try scratch_ally.alloc(u8, 256);
+
+            const sphz = try std.fmt.bufPrintZ(print_buf, "sph: {x}", .{sph.*});
+            _ = c.mvaddstr(0, 0, sphz);
+
+            const splz = try std.fmt.bufPrintZ(print_buf, "spl: {x}", .{spl.*});
+            _ = c.mvaddstr(1, 0, splz);
+
+            const sregz = try std.fmt.bufPrintZ(print_buf, "sreg - {b:0>8}", .{@as(u8, @bitCast(sreg.*))});
+            _ = c.mvaddstr(2, 0, sregz);
+
+            for (gp_regs, 0..) |val, reg_index| {
+                const gp_regz = try std.fmt.bufPrintZ(print_buf, "r{d}: {x}", .{ reg_index, val });
+                _ = c.mvaddstr(@intCast(3 + reg_index), 0, gp_regz);
+            }
+
+            _ = c.refresh();
+            _ = c.getch();
+        }
     }
-
-    ////////////////////
-
-    // Print registers
-
-    std.debug.print("sph: {x}\n", .{sph.*});
-    std.debug.print("spl: {x}\n", .{spl.*});
-
-    std.debug.print("sreg:\n", .{});
-    std.debug.print("  ithsvnzc\n", .{});
-    std.debug.print("  {b:0>8}\n", .{@as(u8, @bitCast(sreg.*))});
-
-    for (gp_regs, 0..) |val, reg_index|
-        std.debug.print("r{d}: {x}\n", .{ reg_index, val });
-
-    std.debug.print("x: {x}\n", .{x.*});
-    // std.debug.print("xh: {x}\n", .{xh.*});
-    // std.debug.print("xl: {x}\n", .{xl.*});
-
-    std.debug.print("y: {x}\n", .{y.*});
-    // std.debug.print("yh: {x}\n", .{yh.*});
-    // std.debug.print("yl: {x}\n", .{yl.*});
-
-    std.debug.print("z: {x}\n", .{z.*});
-    // std.debug.print("zh: {x}\n", .{zh.*});
-    // std.debug.print("zl: {x}\n", .{zl.*});
+    _ = c.endwin();
 }
