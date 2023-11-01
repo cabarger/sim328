@@ -51,7 +51,7 @@ const SP = packed struct {
 };
 
 const Instruction = enum {
-    // ALU
+    // ALU instructions
     add,
     nop,
     cp,
@@ -61,24 +61,60 @@ const Instruction = enum {
     @"or",
     mov,
 
-    // Call/Jump
     call,
+    jmp,
+
+    ret,
+    reti,
 
     // Immediate
     ldi,
 };
 
+fn instrFromOpCode(op_code: u16) Instruction {
+    return switch (@as(u4, @truncate(op_code >> 12))) {
+        0x0 => switch (@as(u2, @truncate(op_code >> 10))) {
+            0x3 => .add,
+            0x0 => .nop,
+            else => unreachable,
+        },
+        0x1 => switch (@as(u2, @truncate(op_code >> 10))) {
+            0x1 => .cp,
+            0x3 => .adc,
+            else => unreachable,
+        },
+        0x2 => switch (@as(u2, @truncate(op_code >> 10))) {
+            0x0 => .@"and",
+            0x1 => .eor,
+            0x2 => .@"or",
+            0x3 => .mov,
+        },
+
+        0x9 => switch (@as(u4, @truncate(op_code >> 8))) {
+            0x4 => switch (@as(u4, @truncate(op_code))) {
+                0xe => .call,
+                0xc => .jmp,
+                else => unreachable,
+            },
+            0x5 => switch (@as(u1, @truncate(op_code >> 4))) {
+                0x0 => .ret,
+                0x1 => .reti,
+            },
+            else => unreachable,
+        },
+
+        0xe => .ldi,
+        else => unreachable,
+    };
+}
+
 fn KB(n: usize) usize {
     return n * 1024;
 }
 
-const SystemCallLocs = enum(u14) {
-    potato = 0x37ff,
-};
-
 const stack_end: u16 = 0x08ff;
 
-const with_curses = false;
+const with_curses = true;
 
 pub fn main() !void {
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
@@ -110,26 +146,26 @@ pub fn main() !void {
     var gp_regs: []u8 = dmem[0x0..0x20];
 
     // 16-bit address pointers
-    const x: *u16 = @ptrCast(@alignCast(gp_regs[0x1a..0x1c]));
-    _ = x;
-    const xl: *u8 = &gp_regs[0x1a];
-    _ = xl;
-    const xh: *u8 = &gp_regs[0x1b];
-    _ = xh;
+    // const x: *u16 = @ptrCast(@alignCast(gp_regs[0x1a..0x1c]));
+    // _ = x;
+    // const xl: *u8 = &gp_regs[0x1a];
+    // _ = xl;
+    // const xh: *u8 = &gp_regs[0x1b];
+    // _ = xh;
 
-    const y: *u16 = @ptrCast(@alignCast(gp_regs[0x1c..0x1e]));
-    _ = y;
-    const yl: *u8 = &gp_regs[0x1c];
-    const yh: *u8 = &gp_regs[0x1d];
-    _ = yh;
-    _ = yl;
+    // const y: *u16 = @ptrCast(@alignCast(gp_regs[0x1c..0x1e]));
+    // _ = y;
+    // const yl: *u8 = &gp_regs[0x1c];
+    // const yh: *u8 = &gp_regs[0x1d];
+    // _ = yh;
+    // _ = yl;
 
-    const z: *u16 = @ptrCast(@alignCast(gp_regs[0x1e..0x20]));
-    _ = z;
-    const zl: *u8 = &gp_regs[0x1e];
-    _ = zl;
-    const zh: *u8 = &gp_regs[0x1f];
-    _ = zh;
+    // const z: *u16 = @ptrCast(@alignCast(gp_regs[0x1e..0x20]));
+    // _ = z;
+    // const zl: *u8 = &gp_regs[0x1e];
+    // _ = zl;
+    // const zh: *u8 = &gp_regs[0x1f];
+    // _ = zh;
 
     ////////////////////
 
@@ -212,51 +248,7 @@ pub fn main() !void {
 
         // 1) Fetch instruction from memory NOTE(caleb): the implicit pmem[pc]
         // 2) Decode instructions
-
-        const op1: u4 = @truncate(pmem[pc] >> 12);
-        const op2: u2 = @truncate(pmem[pc] >> 10);
-
-        const op4: u4 = @truncate(pmem[pc]);
-
-        // var instruction: Instruction = undefined;
-        var instruction: Instruction = switch (op1) {
-            // ALU instructions
-            //  15:12 11:10 9:8   7:4    3:0
-            // --------------------------------
-            // | op1 | op2 | rd | dddd | rrrr |
-            // --------------------------------
-            0x0 => switch (op2) { // add, nop
-                0x3 => .add,
-                0x0 => .nop,
-                else => unreachable,
-            },
-            0x1 => switch (op2) { // cp, adc
-                0x1 => .cp,
-                0x3 => .adc,
-                else => unreachable,
-            },
-            0x2 => switch (op2) { // and, eor, or, mov
-                0x0 => .@"and",
-                0x1 => .eor,
-                0x2 => .@"or",
-                0x3 => .mov,
-            },
-
-            0x9 => switch (op4) { // call, jmp, com, neg, asr, lsr,
-                0xe => .call,
-                else => unreachable,
-            },
-
-            // Immediate instructions
-            //  15:12  11:8   7:4    3:0
-            // ----------------------------
-            // | op1 | KKKK | dddd | KKKK |
-            // ----------------------------
-            0xe => .ldi,
-            else => unreachable,
-        };
-
-        switch (instruction) {
+        switch (instrFromOpCode(pmem[pc])) {
             .add => {
                 // Source/Dest registers
                 const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
@@ -272,7 +264,7 @@ pub fn main() !void {
                 sreg.n = @intCast(gp_regs[dest_reg] >> 7);
                 sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
             },
-            .nop => break, // No operation..
+            .nop => {}, // No operation..
             .cp => {
                 // Source/Dest registers
                 const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
@@ -316,23 +308,37 @@ pub fn main() !void {
                 sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
                 sreg.s = sreg.n ^ sreg.v;
             },
-
             .call => {
-                const cd: u14 = @truncate(pmem[pc + 1]);
                 const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
 
                 // Push return address
                 dmem[sp - 1] = @truncate((pc + 2) >> 8); // sph
                 dmem[sp] = @truncate(pc + 2); // spl
 
-                // Update sp
+                // Decrement stack pointer
                 sph.* = @truncate((sp - 2) >> 8);
                 spl.* = @truncate(sp - 2);
 
                 // Update pc
-                next_pc_value = cd;
+                next_pc_value = @truncate(pmem[pc + 1]);
+            },
+            .jmp => {
+                // Update pc
+                next_pc_value = @truncate(pmem[pc + 1]);
+            },
+            .ret => {
+                const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
 
-                unreachable;
+                // Pop return address
+                const pch: u8 = dmem[sp + 1]; // sph
+                const pcl: u8 = dmem[sp + 2]; // spl
+
+                // Increment sp
+                sph.* = @truncate((sp + 2) >> 8);
+                spl.* = @truncate(sp + 2);
+
+                // Restore pc
+                next_pc_value = (@as(u14, @intCast(pch)) << 8) | pcl;
             },
 
             .ldi => {
@@ -374,18 +380,20 @@ pub fn main() !void {
             defer scratch_arena.state = restore_state;
             var print_buf = try scratch_ally.alloc(u8, 256);
 
-            const sphz = try std.fmt.bufPrintZ(print_buf, "sph: {x}", .{sph.*});
-            _ = c.mvaddstr(0, 0, sphz);
+            const pcz = try std.fmt.bufPrintZ(print_buf, "pc: {x}", .{pc});
+            _ = c.mvaddstr(0, 0, pcz);
 
+            const sphz = try std.fmt.bufPrintZ(print_buf, "sph: {x}", .{sph.*});
+            _ = c.mvaddstr(1, 0, sphz);
             const splz = try std.fmt.bufPrintZ(print_buf, "spl: {x}", .{spl.*});
-            _ = c.mvaddstr(1, 0, splz);
+            _ = c.mvaddstr(2, 0, splz);
 
             const sregz = try std.fmt.bufPrintZ(print_buf, "sreg - {b:0>8}", .{@as(u8, @bitCast(sreg.*))});
-            _ = c.mvaddstr(2, 0, sregz);
+            _ = c.mvaddstr(3, 0, sregz);
 
             for (gp_regs, 0..) |val, reg_index| {
                 const gp_regz = try std.fmt.bufPrintZ(print_buf, "r{d}: {x}", .{ reg_index, val });
-                _ = c.mvaddstr(@intCast(3 + reg_index), 0, gp_regz);
+                _ = c.mvaddstr(@intCast(4 + reg_index), 0, gp_regz);
             }
 
             _ = c.refresh();
