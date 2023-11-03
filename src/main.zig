@@ -21,6 +21,7 @@
 
 const std = @import("std");
 const elf = std.elf;
+const rl = @import("rl.zig");
 
 const c = @cImport({
     @cInclude("ncurses.h");
@@ -45,9 +46,8 @@ const SReg = packed struct {
     i: u1,
 };
 
-const SP = packed struct {
-    l: u8,
-    h: u8,
+const SysCall = enum(u14) {
+    hello_world = 0x3fff,
 };
 
 const Instruction = enum {
@@ -117,6 +117,14 @@ const stack_end: u16 = 0x08ff;
 const with_curses = true;
 
 pub fn main() !void {
+    const screen_width: c_int = 640;
+    const screen_height: c_int = 576;
+
+    rl.InitWindow(screen_width, screen_height, "Sim328");
+    rl.SetConfigFlags(rl.FLAG_MSAA_4X_HINT);
+    rl.SetWindowState(rl.FLAG_WINDOW_RESIZABLE);
+    rl.SetTargetFPS(60);
+
     var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var scratch_arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
     var scratch_ally = scratch_arena.allocator();
@@ -136,7 +144,7 @@ pub fn main() !void {
     // --------------------
     // | 160 Ext I/O regs | 0x0060 - 0x00ff
     // --------------------
-    // |  Internal sram   | 0x08ff
+    // |  Internal sram   | 0x0100 - 0x08ff
     // --------------------
 
     var dmem = try ally.alloc(u8, 256 + KB(2));
@@ -174,10 +182,13 @@ pub fn main() !void {
 
     // Stack pointer
 
-    const sph: *u8 = &io_regs[0x3e];
+    const sp1: *u16 = @ptrCast(@alignCast(io_regs[0x3d..0x3f]));
+    _ = sp1;
+
     const spl: *u8 = &io_regs[0x3d];
-    sph.* = stack_end >> 8;
+    const sph: *u8 = &io_regs[0x3e];
     spl.* = stack_end & 0xff;
+    sph.* = stack_end >> 8;
 
     // Status register
     var sreg: *SReg = @ptrCast(&dmem[0x3f]);
@@ -241,125 +252,148 @@ pub fn main() !void {
 
     // Instruction processing loop
 
-    while (pc < 0x3800) { //pmem[pc] != 0) { // FIXME(caleb): How is this normally done?
-        // NOTE(caleb): Most instructions don't modify the pc so just increment
-        // unless told otherwise.
-        var next_pc_value = pc + 1;
+    while (pc < 0x4000) { //pmem[pc] != 0) { // FIXME(caleb): How is this normally done?
+        if (pc > 0x3ffd) { // Handle sys call
+            switch (@as(SysCall, @enumFromInt(pc))) {
+                .hello_world => std.debug.print("Hello, world!\n", .{}),
+            }
 
-        // 1) Fetch instruction from memory NOTE(caleb): the implicit pmem[pc]
-        // 2) Decode instructions
-        switch (instrFromOpCode(pmem[pc])) {
-            .add => {
-                // Source/Dest registers
-                const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
-                const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
-                const dest_reg: u5 = @truncate(pmem[pc] >> 4);
+            const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
 
-                // Do the add
-                const result = @addWithOverflow(gp_regs[dest_reg], gp_regs[source_regh | source_regl]);
-                gp_regs[dest_reg] = result[0];
+            // Pop return address
+            const pch: u8 = dmem[sp + 1]; // sph
+            const pcl: u8 = dmem[sp + 2]; // spl
 
-                // Update SREG
-                sreg.c = result[1];
-                sreg.n = @intCast(gp_regs[dest_reg] >> 7);
-                sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
-            },
-            .nop => {}, // No operation..
-            .cp => {
-                // Source/Dest registers
-                const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
-                const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
-                const dest_reg: u5 = @truncate(pmem[pc] >> 4);
+            // Increment sp
+            sph.* = @truncate((sp + 2) >> 8);
+            spl.* = @truncate(sp + 2);
 
-                // Do the add
-                const result = @subWithOverflow(gp_regs[dest_reg], gp_regs[source_regh | source_regl]);
-                gp_regs[dest_reg] = result[0];
+            // Restore pc
+            pc = (@as(u14, @intCast(pch)) << 8) | pcl;
+        } else { // Handle avr instruction
+            // 1) Fetch instruction from memory NOTE(caleb): the implicit pmem[pc]
+            // 2) Decode instructions
+            switch (instrFromOpCode(pmem[pc])) {
+                .add => {
+                    // Source/Dest registers
+                    const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
+                    const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
+                    const dest_reg: u5 = @truncate(pmem[pc] >> 4);
 
-                // Update SREG
-                sreg.n = @intCast(gp_regs[dest_reg] >> 7);
-                sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
-            },
-            .adc => {
-                // Source/Dest registers
-                const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
-                const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
-                const dest_reg: u5 = @truncate(pmem[pc] >> 4);
+                    // Do the add
+                    const result = @addWithOverflow(gp_regs[dest_reg], gp_regs[source_regh | source_regl]);
+                    gp_regs[dest_reg] = result[0];
 
-                // Do the add
-                const result = @addWithOverflow(gp_regs[dest_reg], @addWithOverflow(gp_regs[source_regh | source_regl], sreg.c)[0]);
-                gp_regs[dest_reg] = result[0];
+                    // Update SREG
+                    sreg.c = result[1];
+                    sreg.n = @intCast(gp_regs[dest_reg] >> 7);
+                    sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
 
-                // Update SREG
-                sreg.c = result[1];
-                sreg.n = @intCast(gp_regs[dest_reg] >> 7);
-                sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
-            },
-            .@"and" => {
-                // Source/Dest registers
-                const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
-                const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
-                const dest_reg: u5 = @truncate(pmem[pc] >> 4);
+                    pc += 1;
+                },
+                .nop => pc += 1, // No operation..
+                .cp => {
+                    // Source/Dest registers
+                    const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
+                    const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
+                    const dest_reg: u5 = @truncate(pmem[pc] >> 4);
 
-                // Logical and
-                gp_regs[dest_reg] = gp_regs[dest_reg] & gp_regs[source_regh | source_regl];
+                    // Do the add
+                    const result = @subWithOverflow(gp_regs[dest_reg], gp_regs[source_regh | source_regl]);
+                    gp_regs[dest_reg] = result[0];
 
-                sreg.v = 0;
-                sreg.n = @intCast(gp_regs[dest_reg] >> 7);
-                sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
-                sreg.s = sreg.n ^ sreg.v;
-            },
-            .call => {
-                const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
+                    // Update SREG
+                    sreg.n = @intCast(gp_regs[dest_reg] >> 7);
+                    sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
 
-                // Push return address
-                dmem[sp - 1] = @truncate((pc + 2) >> 8); // sph
-                dmem[sp] = @truncate(pc + 2); // spl
+                    pc += 1;
+                },
+                .adc => {
+                    // Source/Dest registers
+                    const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
+                    const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
+                    const dest_reg: u5 = @truncate(pmem[pc] >> 4);
 
-                // Decrement stack pointer
-                sph.* = @truncate((sp - 2) >> 8);
-                spl.* = @truncate(sp - 2);
+                    // Do the add
+                    const result = @addWithOverflow(gp_regs[dest_reg], @addWithOverflow(gp_regs[source_regh | source_regl], sreg.c)[0]);
+                    gp_regs[dest_reg] = result[0];
 
-                // Update pc
-                next_pc_value = @truncate(pmem[pc + 1]);
-            },
-            .jmp => {
-                // Update pc
-                next_pc_value = @truncate(pmem[pc + 1]);
-            },
-            .ret => {
-                const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
+                    // Update SREG
+                    sreg.c = result[1];
+                    sreg.n = @intCast(gp_regs[dest_reg] >> 7);
+                    sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
 
-                // Pop return address
-                const pch: u8 = dmem[sp + 1]; // sph
-                const pcl: u8 = dmem[sp + 2]; // spl
+                    pc += 1;
+                },
+                .@"and" => {
+                    // Source/Dest registers
+                    const source_regh: u8 = @truncate((pmem[pc] >> 5) & (1 << 4));
+                    const source_regl: u8 = @truncate(pmem[pc] & 0x0f);
+                    const dest_reg: u5 = @truncate(pmem[pc] >> 4);
 
-                // Increment sp
-                sph.* = @truncate((sp + 2) >> 8);
-                spl.* = @truncate(sp + 2);
+                    // Logical and
+                    gp_regs[dest_reg] = gp_regs[dest_reg] & gp_regs[source_regh | source_regl];
 
-                // Restore pc
-                next_pc_value = (@as(u14, @intCast(pch)) << 8) | pcl;
-            },
+                    sreg.v = 0;
+                    sreg.n = @intCast(gp_regs[dest_reg] >> 7);
+                    sreg.z = @intFromBool(gp_regs[dest_reg] == 0);
+                    sreg.s = sreg.n ^ sreg.v;
 
-            .ldi => {
-                // Constant data
-                const cdh: u8 = @intCast((pmem[pc] >> 4) & 0x00f0);
-                const cdl: u8 = @intCast(pmem[pc] & 0x000f);
+                    pc += 1;
+                },
+                .call => {
+                    const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
 
-                // Dest register
-                const dest_reg_index: u16 = ((pmem[pc] >> 4) & 0x000f) + 0x10;
+                    // Push return address
+                    dmem[sp - 1] = @truncate((pc + 2) >> 8); // sph
+                    dmem[sp] = @truncate(pc + 2); // spl
 
-                // Execute operation
-                gp_regs[dest_reg_index] = cdh | cdl;
+                    // Decrement stack pointer
+                    sph.* = @truncate((sp - 2) >> 8);
+                    spl.* = @truncate(sp - 2);
 
-                // Store the result
-                // NOTE(caleb): Normally write back to sram here??
-                // Things like update SREG??
-            },
-            else => break, // Not implemented or "bad" instruction
+                    // Update pc
+                    pc = @truncate(pmem[pc + 1]);
+                },
+                .jmp => {
+                    // Update pc
+                    pc = @truncate(pmem[pc + 1]);
+                },
+                .ret => {
+                    const sp = ((@as(u16, @intCast(sph.*))) << 8) | spl.*;
+
+                    // Pop return address
+                    const pch: u8 = dmem[sp + 1]; // sph
+                    const pcl: u8 = dmem[sp + 2]; // spl
+
+                    // Increment sp
+                    sph.* = @truncate((sp + 2) >> 8);
+                    spl.* = @truncate(sp + 2);
+
+                    // Restore pc
+                    pc = (@as(u14, @intCast(pch)) << 8) | pcl;
+                },
+
+                .ldi => {
+                    // Constant data
+                    const cdh: u8 = @intCast((pmem[pc] >> 4) & 0x00f0);
+                    const cdl: u8 = @intCast(pmem[pc] & 0x000f);
+
+                    // Dest register
+                    const dest_reg_index: u16 = ((pmem[pc] >> 4) & 0x000f) + 0x10;
+
+                    // Execute operation
+                    gp_regs[dest_reg_index] = cdh | cdl;
+
+                    // Store the result
+                    // NOTE(caleb): Normally write back to sram here??
+                    // Things like update SREG??
+
+                    pc += 1;
+                },
+                else => break, // Not implemented or "bad" instruction
+            }
         }
-
-        pc = next_pc_value; // Update program counter
 
         // Print registers
 

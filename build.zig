@@ -1,4 +1,11 @@
 const std = @import("std");
+const rl = @import("raylib/src/build.zig");
+
+fn getSrcDir() []const u8 {
+    return std.fs.path.dirname(@src().file).?;
+}
+
+const src_dir = getSrcDir();
 
 // Although this function looks imperative, note that its job is to
 // declaratively construct a build graph that will be executed by an external
@@ -15,6 +22,8 @@ pub fn build(b: *std.Build) void {
     // set a preferred release mode, allowing the user to decide how to optimize.
     const optimize = b.standardOptimizeOption(.{});
 
+    const raylib = rl.addRaylib(b, target, optimize, .{});
+
     const exe = b.addExecutable(.{
         .name = "sim328",
         // In this case the main source file is merely a path, however, in more
@@ -25,6 +34,8 @@ pub fn build(b: *std.Build) void {
     });
     exe.linkLibC();
     exe.linkSystemLibrary("ncurses");
+    exe.addIncludePath(.{ .path = src_dir ++ "/raylib/src" });
+    exe.linkLibrary(raylib);
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
